@@ -3,7 +3,7 @@
 from __future__ import division
 
 import rospy
-from std_msgs.msg import String, Int16
+from std_msgs.msg import String, Int16, Bool, Header
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from neobot import mission_controller
@@ -23,15 +23,21 @@ class MissionNode:
         
         self.goalPub = rospy.Publisher('move_base_simple/goal', 
             PoseStamped, queue_size = 1)
-        rospy.Subscriber('goal_status', String, self.statusCallback)
+        rospy.Subscriber('at_goal', Bool, self.atGoalCallback)
         rospy.Subscriber('odom', Odometry, self.odomCallback)  
-        rospy.Subscriber('cliff_status', Int16, self.cliffCallback) # check msg type
+        rospy.Subscriber('cliff_status', Int16, self.cliffCallback) 
+        rospy.Subscriber('command', String, self.commandCallback) 
         # TODO add other subs for vision
 
         self.cur_pose = None
         self.goal_pose = self.cur_pose
         self.state = self.controller.seeker.state
-        self.cliff_status = None
+        
+        #self.cliff_status = None  # what is this?
+        self.at_cliff = None  # needed in object?
+        self.current_cliffs = [False, False, False, False]
+        self.risen_cliffs = [False, False, False, False]
+        self.rotation_dir = 0  # direction to rotate when recovering from cliff
         
         self.rate = rospy.get_param('~rate', 1.0)
         self.timeout = float(rospy.get_param('~timeout', 3.0))  ## TODO default?
@@ -43,29 +49,75 @@ class MissionNode:
             
     def publish(self):
         # seems very awkward
-        if self.state != self.controller.seeker.state:  # if state changed, update goal            
-            self.goal_pose = self.controller.get_goal(self.cur_pose, self.cliff_status)
+        state = self.controller.seeker.state
+        if state == 'mission_complete':
+            print('State: {}'.format(state))
+            return  # mission over, do nothing further
+            
+        if self.state != state:  # if state changed, update goal            
+            self.goal_pose = self.controller.get_goal(self.cur_pose, self.rotation_dir)
+            self.state = self.controller.seeker.state
+            print('Issuing new goal')  # TODO debug
+            h = Header()
+            h.stamp = rospy.get_rostime()
+            h.frame_id = 'odom'
+            goal = PoseStamped()
+            goal.header = h
+            goal.pose = self.goal_pose
+            print('publishing goal_pose: \n{}'.format(goal.pose))
+            self.goalPub.publish(goal)  # TODO needs header
+            self.at_cliff = False  # reset
 
-    
-    def cliffCallback(self, msg):
-        self.cliff_status = msg
+    def cliffCallback(self, msg):        
+        # self.cliff_status = msg?
+        self.at_cliff = msg.data & 0x00001000  # if bit 12 set, motion stopped by cliff
+        if self.at_cliff:
+            self.controller.seeker.at_cliff()
+        # cliff sensors are numbered 0-3
+        #   0 --> left front,  1 --> left rear
+        #   2 --> right front, 3 --> right rear
+        # cliff sensor 'current' value == 1 means it sees a cliff now
+        # cliff sensor 'risen' value == 1 means it changed from safe to cliff
+        #   'risen' can differ from 'current' due to the debounce delay on the sensors
+        # for now we ignore 'risen' here and depend on 'current'
+        # the 4 elements the following lists are T/F according to whether 
+        #   that sensor has value 1 or not
+        print('cliffCallback msg.data: {}'.format(msg.data))  # TODO
+        print('Got msg: %s; State: %s' % (msg.data, self.controller.seeker.state))  # TODO debug
+        for i in range(4):
+            self.current_cliffs[i] = (msg.data & (1 << i) > 0)
+            self.risen_cliffs[i] = (msg.data & (1 << (8 + i)) > 0)
+        if self.current_cliffs[0] and self.current_cliffs[2]:
+            self.rotation_dir = 0
+        elif self.current_cliffs[0] and self.current_cliffs[3]:
+            self.rotation_dir = 0
+        elif self.current_cliffs[0]:
+            self.rotation_dir = 1
+        elif self.current_cliffs[1] or self.current_cliffs[2]:
+            self.rotation_dir = -1
+        else:
+            self.rotation_dir = 1
+        print('cliffCallback current_cliffs: {}\t{}\t{}\t{}'.format(
+            self.current_cliffs[0], self.current_cliffs[1], self.current_cliffs[2],
+            self.current_cliffs[3]))  # TODO debug
         
     def odomCallback(self, msg):  # 
         self.cur_pose = msg.pose.pose
         
-    def statusCallback(self, msg):
-        # must be a better way :(
-        if msg.data == 'at_cliff':
-            self.controller.seeker.at_cliff()
-        elif msg.data == 'at_goal':
-            self.controller.seeker.at_goal()
-        elif msg.data == 'start':
+    def atGoalCallback(self, msg):
+        if msg.data:
+            print('Got msg at_goal: %s; State: %s' % (msg.data, self.controller.seeker.state))  # TODO debug            
+            print('self.goal_pose now: \n{}'.format(self.goal_pose))
+            self.controller.seeker.at_goal()  # triggers state change
+        
+    
+    def commandCallback(self, msg):
+        if msg.data == 'start':
             self.controller.seeker.start()
         else:
-            rospy.logwarn("Unexpected msg in statusCallback")
+            rospy.logwarn("Unexpected msg in commandCallback")
         print('Got msg: %s; New state: %s' % (msg.data, self.controller.seeker.state))  # TODO debug
-        #print('Seeker.ch.state: %s' % self.controller.seeker.ch.state)
-
+        
     
 if __name__ == '__main__':
     try:

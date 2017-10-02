@@ -8,7 +8,7 @@ from transitions.extensions import HierarchicalMachine as Machine
 from tf import transformations as t
 import numpy as np
 from geometry_msgs.msg import Pose, Point, Quaternion
-from math import pi
+from math import pi, sin, cos
 import copy
 
 class CliffHandler(Machine):
@@ -37,19 +37,19 @@ class Seeker(Machine):
         self.ch = CliffHandler()
         self.states = ['idle', 'edge_finding', 
             {'name': 'clearing', 'children': self.ch, 'remap': {'done': 'cleared'}}, 
-            {'name': 'cleared', 'on_enter': 'check_if_done'},
-            {'name': 'mission_complete', 'on_enter': 'make_final_move'}]
+            {'name': 'cleared', 'on_enter': 'check_if_done'}, 'final_move',
+            'mission_complete']
         Machine.__init__(self, states = self.states, initial = 'idle')
         self.add_transition('start', 'idle', 'edge_finding',
                             before = ['reset_edge_count'])
         self.add_transition('at_cliff', 'edge_finding', 'clearing',
                             before = ['increment_edge_count'],
                             after = 'to_clearing_angle_finding')
+        self.add_transition('at_goal', 'final_move', 'mission_complete')
         
     def get_goal_pose(self, frame='odom'):
         pass
         # TODO - should this be up a level or two? Does ch need its own?
-    
     
     def reset_edge_count(self):
         self.edges = 0
@@ -61,7 +61,8 @@ class Seeker(Machine):
         if self.edges < self.max_edges:
             self.to_edge_finding()
         else:
-            self.to_mission_complete()
+            #self.to_mission_complete()
+            self.to_final_move()
             
     def make_final_move(self):
         print('Executing final move')
@@ -96,9 +97,12 @@ class MissionController:
             pose: geometry_msgs Pose() representing starting pose
             dist: signed distance to translate on current heading
         """
+        pos_np = self.point_to_numpy(pose.position)
+        orn_np = self.quat_to_numpy(pose.orientation)
+        heading = t.euler_from_quaternion(orn_np, axes='sxyz')[2]  # radians
+        translation = np.array([dist * cos(heading), dist * sin(heading), 0.0])
         new_pose = Pose()
-        translation = np.array([dist, 0.0, 0.0])
-        new_position_np = translation + self.point_to_numpy(pose.position)
+        new_position_np = np.add(pos_np, translation)
         new_pose.position = Point(*new_position_np)
         new_pose.orientation = pose.orientation
         return new_pose
@@ -118,7 +122,14 @@ class MissionController:
         new_pose.orientation = orn_new
         return new_pose
     
-    def get_goal(self, pose, cliff_status):  # pose is a geometry_msgs Pose # cliff_status is Int16 ?
+    def get_goal(self, pose, turn_dir):  # pose is a geometry_msgs Pose # turn_dir is int
+        """Specifies the new goal pose.
+        
+        Args:
+            pose: bot's current pose
+            turn_dir: direction to rotate recovering from a cliff (sensor based)
+                +1 is CCW; -1 is CW; 0 is don't rotate (skip angle_finding)
+        """
         position = pose.position
         orn = pose.orientation
         goal_pose = Pose()  # empty geometry_msgs Pose
@@ -136,7 +147,7 @@ class MissionController:
             self.start_angle_pose = copy.deepcopy(pose)            
             # also save here for table dimension estimating; possibly redundant
             self.edge_poses.append(pose)
-            ang = 2*pi/3 * cliff_status.data
+            ang = 2*pi/3 * turn_dir
             goal_pose = self.pure_spin_move(pose, ang)
 
         elif self.seeker.state == 'clearing_aligning':
@@ -167,10 +178,14 @@ class MissionController:
             # do we need this???
             print('========= Reached "cleared" state =========')
             
-        elif self.seeker.state == 'mission_complete':
+        elif self.seeker.state == 'final_move':
             # set final move 'x' m straight forward depending on table dimension
             # for now set goal 0.2 m straight forward
             goal_pose = self.straight_translation(pose, 0.2)
+            
+        elif self.seeker.state == 'mission_complete':
+            # stay where you are
+            goal_pose = pose
             
             print('======== Completed mission! =============')
         else:
