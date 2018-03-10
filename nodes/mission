@@ -7,6 +7,7 @@ from std_msgs.msg import String, Int16, Bool, Header
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from neobot import mission_controller
+import time
 
 class MissionNode:
     """Controls the overall neobot mission.
@@ -52,9 +53,11 @@ class MissionNode:
         state = self.controller.seeker.state
         if state == 'mission_complete':
             print('State: {}'.format(state))
+            self.goal_pose = self.cur_pose
             return  # mission over, do nothing further
             
         if self.state != state:  # if state changed, update goal            
+            #time.sleep(3.0)
             self.goal_pose = self.controller.get_goal(self.cur_pose, self.rotation_dir)
             self.state = self.controller.seeker.state
             print('Issuing new goal')  # TODO debug
@@ -73,6 +76,7 @@ class MissionNode:
         self.at_cliff = msg.data & 0x00001000  # if bit 12 set, motion stopped by cliff
         if self.at_cliff:
             self.controller.seeker.at_cliff()
+            self.goal_pose = self.cur_pose
         # cliff sensors are numbered 0-3
         #   0 --> left front,  1 --> left rear
         #   2 --> right front, 3 --> right rear
@@ -101,6 +105,8 @@ class MissionNode:
             self.current_cliffs[0], self.current_cliffs[1], self.current_cliffs[2],
             self.current_cliffs[3]))  # TODO debug
         
+        #time.sleep(10.0)  # TODO debug if message timing is effect
+        
     def odomCallback(self, msg):  # 
         self.cur_pose = msg.pose.pose
         
@@ -109,7 +115,7 @@ class MissionNode:
             print('Got msg at_goal: %s; State: %s' % (msg.data, self.controller.seeker.state))  # TODO debug            
             print('self.goal_pose now: \n{}'.format(self.goal_pose))
             self.controller.seeker.at_goal()  # triggers state change
-        
+            self.goal_pose = self.cur_pose
     
     def commandCallback(self, msg):
         if msg.data == 'start':

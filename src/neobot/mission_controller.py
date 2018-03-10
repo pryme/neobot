@@ -10,6 +10,7 @@ import numpy as np
 from geometry_msgs.msg import Pose, Point, Quaternion
 from math import pi, sin, cos
 import copy
+import time
 
 class CliffHandler(Machine):
     
@@ -22,6 +23,8 @@ class CliffHandler(Machine):
         self.add_transition('at_goal', 'aligning', 'backing')
         self.add_transition('at_goal', 'backing', 'spinning')
         self.add_transition('at_goal', 'spinning', 'done')
+        self.add_transition('at_goal', 'angle_finding', 'backing')
+        self.add_transition('at_cliff', 'aligning', 'backing')
         
     def save_start_pose(self):
         print('Executing save_start_pose')
@@ -147,7 +150,7 @@ class MissionController:
             self.start_angle_pose = copy.deepcopy(pose)            
             # also save here for table dimension estimating; possibly redundant
             self.edge_poses.append(pose)
-            ang = 2*pi/3 * turn_dir
+            ang = 15*pi/16 * turn_dir
             goal_pose = self.pure_spin_move(pose, ang)
 
         elif self.seeker.state == 'clearing_aligning':
@@ -167,7 +170,7 @@ class MissionController:
             
         elif self.seeker.state == 'clearing_backing':
             # set goal 0.1 m straight reverse
-            goal_pose = self.straight_translation(pose, -0.1)
+            goal_pose = self.straight_translation(pose, -0.2)
             
         elif self.seeker.state == 'clearing_spinning':
             # set goal pi rad spin
